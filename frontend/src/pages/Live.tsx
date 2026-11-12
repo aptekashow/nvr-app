@@ -4,6 +4,8 @@ import Hls from 'hls.js'
 import { getCameras, CameraStatus } from '../api'
 import './Live.css'
 
+const HLS_MIME = 'application/vnd.apple.mpegurl'
+
 export default function Live() {
   const { id } = useParams<{ id: string }>()
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -41,8 +43,26 @@ export default function Live() {
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let retries = 0
     let disposed = false
+    let nativeErrorHandler: (() => void) | undefined
+    let nativeMetadataHandler: (() => void) | undefined
     const src = cam.hls_url
     setError('')
+
+    const isHevcStream = () =>
+      Boolean(hls?.levels.some((level) => /^(hvc1|hev1)/i.test(level.videoCodec || '')))
+
+    const hevcNotSupported = () => {
+      if (!hls || typeof MediaSource === 'undefined') return false
+      return hls.levels.some((level) => {
+        const codec = level.videoCodec || ''
+        return /^(hvc1|hev1)/i.test(codec) &&
+          !MediaSource.isTypeSupported(`video/mp4; codecs="${codec}"`)
+      })
+    }
+
+    const showHevcHelp = () => {
+      setError('Камера передаёт H.265/HEVC, но этот браузер или устройство не поддерживает его аппаратное/программное декодирование. Попробуйте Safari на совместимом устройстве или браузер с поддержкой HEVC.')
+    }
 
     const retry = (message: string) => {
       if (disposed) return
@@ -64,7 +84,23 @@ export default function Live() {
       }, Math.min(1000 * retries, 5000))
     }
 
-    if (Hls.isSupported()) {
+    const onNativeMetadata = () => {
+      video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
+    }
+    const onNativeError = () => {
+      retry('Не удалось открыть HLS-поток. Если камера использует H.265/HEVC, проверьте поддержку этого кодека браузером и устройством')
+    }
+
+    // Prefer native HLS where available (notably Safari), as its platform
+    // decoder often has broader HEVC support than Media Source Extensions.
+    if (video.canPlayType(HLS_MIME)) {
+      nativeMetadataHandler = onNativeMetadata
+      nativeErrorHandler = onNativeError
+      video.addEventListener('loadedmetadata', onNativeMetadata, { once: true })
+      video.addEventListener('error', onNativeError)
+      video.src = src
+      video.load()
+    } else if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -84,6 +120,12 @@ export default function Live() {
       hls.loadSource(src)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (hevcNotSupported()) {
+          showHevcHelp()
+          hls?.destroy()
+          hls = null
+          return
+        }
         setError('')
         retries = 0
         video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
@@ -91,26 +133,27 @@ export default function Live() {
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal || disposed) return
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (isHevcStream()) {
+            showHevcHelp()
+            hls?.destroy()
+            hls = null
+            return
+          }
           hls?.recoverMediaError()
           return
         }
         retry(data.details || 'Поток пока недоступен')
       })
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = src
-      video.addEventListener('loadedmetadata', () => {
-        video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
-      }, { once: true })
-      video.addEventListener('error', () => retry('Не удалось открыть HLS-поток'))
-      video.load()
     } else {
-      setError('HLS не поддерживается этим браузером')
+      setError('Этот браузер не поддерживает HLS. Для H.265/HEVC также требуется поддержка кодека устройством.')
     }
 
     return () => {
       disposed = true
       if (retryTimer) clearTimeout(retryTimer)
       if (hls) hls.destroy()
+      if (nativeMetadataHandler) video.removeEventListener('loadedmetadata', nativeMetadataHandler)
+      if (nativeErrorHandler) video.removeEventListener('error', nativeErrorHandler)
       video.pause()
       video.removeAttribute('src')
       video.load()
