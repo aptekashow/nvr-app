@@ -37,7 +37,7 @@ export default function Dashboard({ onLogout }: Props) {
   // overlapping API calls when the page is slow or the camera list is large.
   useEffect(() => {
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout>
+    let timer: ReturnType<typeof setTimeout> | undefined
     const refresh = async () => {
       await load()
       if (!cancelled) timer = setTimeout(refresh, 15000)
