@@ -155,6 +155,7 @@ func (s *Server) getCamera(c echo.Context) error {
 func (s *Server) deleteCamera(c echo.Context) error {
 	id := c.Param("id")
 	_ = s.stream.StopRecording(id)
+	s.stream.RemoveFromMediaMTX(id)
 	if err := s.store.DeleteCamera(id); err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
