@@ -127,7 +127,7 @@ func (s *Server) createCamera(c echo.Context) error {
 	if req.Name == "" || req.RTSPUrl == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name and rtsp_url required"})
 	}
-	parsed, parseErr := url.ParseRequestURI(req.RTSPUrl)
+	parsed, parseErr := url.Parse(req.RTSPUrl)
 	if parseErr != nil || (parsed.Scheme != "rtsp" && parsed.Scheme != "rtsps") || parsed.Hostname() == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "rtsp_url must be a valid rtsp:// or rtsps:// address"})
 	}
