@@ -24,6 +24,29 @@ function formatTime(sec: number): string {
   return `${m}:${String(r).padStart(2, '0')}`
 }
 
+function AuthenticatedImage({ src, alt = '' }: { src: string; alt?: string }) {
+  const [objectUrl, setObjectUrl] = useState('')
+  useEffect(() => {
+    let currentUrl = ''
+    const controller = new AbortController()
+    fetch(src, { headers: authHeaders(), signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('Не удалось загрузить кадр')
+        return response.blob()
+      })
+      .then((blob) => {
+        currentUrl = URL.createObjectURL(blob)
+        setObjectUrl(currentUrl)
+      })
+      .catch(() => setObjectUrl(''))
+    return () => {
+      controller.abort()
+      if (currentUrl) URL.revokeObjectURL(currentUrl)
+    }
+  }, [src])
+  return <img src={objectUrl || undefined} alt={alt} loading="lazy" draggable={false} />
+}
+
 export default function Archive() {
   const [cameras, setCameras] = useState<CameraStatus[]>([])
   const [cameraId, setCameraId] = useState('')
@@ -197,7 +220,7 @@ export default function Archive() {
             <div className="filmstrip">
               {thumbs.map((t) => (
                 <div key={t} className="film-cell" style={{ opacity: t >= startSec && t <= endSec ? 1 : 0.35 }} title={formatTime(t)}>
-                  <img src={thumbUrl(t)} alt="" loading="lazy" draggable={false} />
+                  <AuthenticatedImage src={thumbUrl(t)} />
                   <span className="film-time">{formatTime(t)}</span>
                 </div>
               ))}
@@ -224,7 +247,7 @@ export default function Archive() {
               {hoverSec !== null && !dragging.current && (
                 <div className="hover-line" style={{ left: `${(hoverSec / duration) * 100}%` }}>
                   <div className="hover-preview">
-                    <img src={thumbUrl(hoverSec)} alt="" />
+                    <AuthenticatedImage src={thumbUrl(hoverSec)} />
                     <span>{formatTime(hoverSec)}</span>
                   </div>
                 </div>
