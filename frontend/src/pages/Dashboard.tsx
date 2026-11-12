@@ -10,6 +10,9 @@ interface Props {
 export default function Dashboard({ onLogout }: Props) {
   const [cameras, setCameras] = useState<CameraStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [formError, setFormError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', rtsp_url: '', username: '', password: '' })
 
@@ -17,8 +20,9 @@ export default function Dashboard({ onLogout }: Props) {
     try {
       const data = await getCameras()
       setCameras(data)
+      setLoadError('')
     } catch (e) {
-      console.error(e)
+      setLoadError(e instanceof Error ? e.message : 'Не удалось загрузить камеры')
     } finally {
       setLoading(false)
     }
@@ -32,20 +36,41 @@ export default function Dashboard({ onLogout }: Props) {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    setFormError('')
+    const name = form.name.trim()
+    const rtspUrl = form.rtsp_url.trim()
+    let parsed: URL
     try {
-      await createCamera(form)
+      parsed = new URL(rtspUrl)
+    } catch {
+      setFormError('Укажите полный RTSP-адрес, например rtsp://192.168.1.100:554/stream')
+      return
+    }
+    if (!name || !['rtsp:', 'rtsps:'].includes(parsed.protocol) || !parsed.hostname) {
+      setFormError('Проверьте название и RTSP-адрес камеры')
+      return
+    }
+    setSubmitting(true)
+    try {
+      await createCamera({ ...form, name, rtsp_url: rtspUrl, username: form.username.trim() })
       setShowAdd(false)
       setForm({ name: '', rtsp_url: '', username: '', password: '' })
-      load()
-    } catch (err: any) {
-      alert(err.message)
+      await load()
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Ошибка добавления камеры')
+    } finally {
+      setSubmitting(false)
     }
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Удалить камеру «${name}»?`)) return
-    await deleteCamera(id)
-    load()
+    try {
+      await deleteCamera(id)
+      await load()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Ошибка удаления камеры')
+    }
   }
 
   const toggleRecord = async (cam: CameraStatus) => {
@@ -73,6 +98,7 @@ export default function Dashboard({ onLogout }: Props) {
       </header>
 
       <main className="content">
+        {loadError && <div className="form-error">{loadError} <button className="btn" onClick={load}>Повторить</button></div>}
         {loading && cameras.length === 0 ? (
           <div className="empty">Загрузка...</div>
         ) : cameras.length === 0 ? (
@@ -114,16 +140,18 @@ export default function Dashboard({ onLogout }: Props) {
       </main>
 
       {showAdd && (
-        <div className="modal-overlay" onClick={() => setShowAdd(false)}>
+        <div className="modal-overlay" onClick={() => !submitting && setShowAdd(false)}>
           <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={handleCreate}>
             <h2>Добавить поток</h2>
             <label>Название<input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Камера 1" /></label>
-            <label>RTSP URL<input required value={form.rtsp_url} onChange={(e) => setForm({ ...form, rtsp_url: e.target.value })} placeholder="rtsp://user:pass@192.168.1.100:554/stream" /></label>
-            <label>Логин камеры<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
-            <label>Пароль камеры<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
+            <label>RTSP URL<input required autoComplete="off" value={form.rtsp_url} onChange={(e) => setForm({ ...form, rtsp_url: e.target.value })} placeholder="rtsp://192.168.1.100:554/stream" /></label>
+            <p className="form-help">Укажите полный адрес потока. Если камера требует авторизацию, заполните логин и пароль ниже.</p>
+            <label>Логин камеры<input autoComplete="off" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
+            <label>Пароль камеры<input type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
+            {formError && <div className="form-error">{formError}</div>}
             <div className="modal-actions">
-              <button type="button" className="btn" onClick={() => setShowAdd(false)}>Отмена</button>
-              <button type="submit" className="btn primary">Добавить</button>
+              <button type="button" className="btn" disabled={submitting} onClick={() => setShowAdd(false)}>Отмена</button>
+              <button type="submit" className="btn primary" disabled={submitting}>{submitting ? 'Сохраняем…' : 'Добавить камеру'}</button>
             </div>
           </form>
         </div>
