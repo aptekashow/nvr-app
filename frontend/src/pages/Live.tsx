@@ -19,7 +19,6 @@ export default function Live() {
   const [playerState, setPlayerState] = useState<PlayerState>('loading')
   const [message, setMessage] = useState('Подключаемся к камере…')
   const [scale, setScale] = useState(1)
-  const [attempt, setAttempt] = useState(0)
   const [manualRetry, setManualRetry] = useState(0)
 
   useEffect(() => {
@@ -55,7 +54,6 @@ export default function Live() {
   }, [id])
 
   const retry = useCallback(() => {
-    setAttempt(0)
     setMessage('Повторное подключение…')
     setPlayerState('loading')
     setManualRetry((value) => value + 1)
