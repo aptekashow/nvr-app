@@ -10,7 +10,6 @@ services:
       - "9997:9997"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
-      - nvr_recordings:/recordings
 
   backend:
     build: ../backend
