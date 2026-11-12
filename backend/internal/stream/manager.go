@@ -2,6 +2,7 @@ package stream
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"nvr-app/internal/config"
@@ -50,6 +51,9 @@ func NewManager(cfg *config.Config, st *store.MemoryStore) *Manager {
 }
 
 func (m *Manager) Start() {
+	for _, cam := range m.store.ListCameras() {
+		go m.PublishToMediaMTX(cam)
+	}
 	ticker := time.NewTicker(time.Duration(m.cfg.PreviewInterval) * time.Second)
 	defer ticker.Stop()
 	for {
@@ -68,7 +72,8 @@ func (m *Manager) updateAllPreviews() {
 
 func (m *Manager) capturePreview(cam *models.Camera) {
 	outPath := filepath.Join(m.cfg.PreviewsDir, cam.ID+".jpg")
-	cmd := exec.Command("ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", cam.RTSPUrl,
+	src := buildRTSPURL(cam.RTSPUrl, cam.Username, cam.Password)
+	cmd := exec.Command("ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", src,
 		"-frames:v", "1", "-q:v", "5", outPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -98,7 +103,7 @@ func (m *Manager) GetStatus(cam *models.Camera) models.CameraStatus {
 		Recording:   cam.Recording,
 		PreviewURL:  preview,
 		LastFrameAt: m.lastFrame[cam.ID],
-		HLSUrl:      fmt.Sprintf("http://localhost:8888/%s/index.m3u8", cam.ID),
+		HLSUrl:      fmt.Sprintf("/hls/%s/index.m3u8", cam.ID),
 	}
 }
 
@@ -119,7 +124,8 @@ func (m *Manager) StartRecording(cameraID string) error {
 	if _, err := os.Stat(outFile); err == nil {
 		outFile = filepath.Join(dir, day+"_"+time.Now().Format("150405")+".mp4")
 	}
-	args := []string{"-y", "-rtsp_transport", "tcp", "-i", cam.RTSPUrl,
+	src := buildRTSPURL(cam.RTSPUrl, cam.Username, cam.Password)
+	args := []string{"-y", "-rtsp_transport", "tcp", "-i", src,
 		"-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", "-f", "mp4", outFile}
 	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stdout = nil
@@ -234,19 +240,53 @@ func (m *Manager) ListRecordings(cameraID string) ([]RecordingInfo, error) {
 	return out, nil
 }
 
+func buildRTSPURL(raw, user, pass string) string {
+	if user == "" {
+		return raw
+	}
+	if strings.Contains(raw, "@") {
+		return raw
+	}
+	const p = "rtsp://"
+	if strings.HasPrefix(strings.ToLower(raw), p) {
+		return p + user + ":" + pass + "@" + raw[len(p):]
+	}
+	return raw
+}
+
 func (m *Manager) PublishToMediaMTX(cam *models.Camera) {
-	url := fmt.Sprintf("%s/v3/config/paths/add/%s", m.cfg.MediaMTXAPI, cam.ID)
-	body := fmt.Sprintf(`{"source":%q,"sourceOnDemand":true}`, cam.RTSPUrl)
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		return
+	src := buildRTSPURL(cam.RTSPUrl, cam.Username, cam.Password)
+	name := cam.ID
+	body := fmt.Sprintf(
+		`{"source":%q,"sourceOnDemand":true,"rtspTransport":"tcp","sourceOnDemandStartTimeout":"15s","sourceOnDemandCloseAfter":"30s"}`,
+		src,
+	)
+	endpoints := []struct {
+		method string
+		url    string
+	}{
+		{http.MethodPost, fmt.Sprintf("%s/v3/config/paths/add/%s", m.cfg.MediaMTXAPI, name)},
+		{http.MethodPost, fmt.Sprintf("%s/v3/config/paths/replace/%s", m.cfg.MediaMTXAPI, name)},
+		{http.MethodPatch, fmt.Sprintf("%s/v3/config/paths/patch/%s", m.cfg.MediaMTXAPI, name)},
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[mediamtx] publish failed: %v", err)
-		return
+	client := &http.Client{Timeout: 10 * time.Second}
+	for _, ep := range endpoints {
+		req, err := http.NewRequest(ep.method, ep.url, strings.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[mediamtx] %s %s: %v", ep.method, ep.url, err)
+			continue
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		log.Printf("[mediamtx] %s path %s -> %s %s", ep.method, name, resp.Status, string(b))
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return
+		}
 	}
-	defer resp.Body.Close()
-	log.Printf("[mediamtx] published %s (%s)", cam.ID, resp.Status)
+	log.Printf("[mediamtx] failed to publish path %s", name)
 }
