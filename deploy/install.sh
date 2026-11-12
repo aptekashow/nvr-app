@@ -40,7 +40,7 @@ docker compose up -d --build
 
 echo ""
 echo "Готово."
-echo "  UI:  http://$(hostname -I | awk '{print $1}')/"
+echo "  UI:  http://$(hostname -I | awk '{print $1}'):8080/"
 echo "  Логин: admin / admin"
 echo ""
 echo "Полезные команды:"
