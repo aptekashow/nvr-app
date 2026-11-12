@@ -8,6 +8,7 @@ import (
 	"nvr-app/internal/store"
 	"nvr-app/internal/stream"
 	"os"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -121,8 +122,14 @@ func (s *Server) createCamera(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad request"})
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.RTSPUrl = strings.TrimSpace(req.RTSPUrl)
 	if req.Name == "" || req.RTSPUrl == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name and rtsp_url required"})
+	}
+	parsed, parseErr := url.ParseRequestURI(req.RTSPUrl)
+	if parseErr != nil || (parsed.Scheme != "rtsp" && parsed.Scheme != "rtsps") || parsed.Hostname() == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "rtsp_url must be a valid rtsp:// or rtsps:// address"})
 	}
 	cam, err := s.store.CreateCamera(models.CreateCameraRequest{
 		Name:     req.Name,
