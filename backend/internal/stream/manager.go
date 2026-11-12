@@ -123,7 +123,7 @@ func (m *Manager) capturePreview(cam *models.Camera) {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-rtsp_transport", "tcp", "-rw_timeout", "20000000",
+		"-rtsp_transport", "tcp", "-timeout", "20000000",
 		"-i", m.mediaMTXStreamURL(cam.ID),
 		"-an", "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "7",
 		tmpPath,
@@ -195,7 +195,7 @@ func (m *Manager) StartRecording(cameraID string) error {
 	// Both video and audio are stream-copied: no codec conversion is performed.
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-n",
-		"-rtsp_transport", "tcp", "-rw_timeout", "15000000",
+		"-rtsp_transport", "tcp", "-timeout", "15000000",
 		"-i", m.mediaMTXStreamURL(cameraID),
 		"-map", "0:v:0", "-map", "0:a?",
 		"-c", "copy",
