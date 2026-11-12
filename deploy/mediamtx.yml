@@ -10,7 +10,7 @@ rtspTransports: [tcp, udp]
 
 hls: yes
 hlsAddress: :8888
-hlsAlwaysRemux: yes
+hlsAlwaysRemux: no
 hlsVariant: fmp4
 hlsSegmentCount: 6
 hlsSegmentDuration: 2s
