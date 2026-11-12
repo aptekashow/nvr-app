@@ -6,7 +6,7 @@ apiAddress: :9997
 
 rtsp: yes
 rtspAddress: :8554
-protocols: [tcp, udp]
+rtspTransports: [tcp, udp]
 
 hls: yes
 hlsAddress: :8888
