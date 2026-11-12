@@ -165,11 +165,21 @@ export default function Live() {
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (disposed || !hls) return
         retryCount = 0
-        const hevc = hls.levels.some((level) => /^(hvc1|hev1)/i.test(level.videoCodec || ''))
-        // Safari/iOS native HLS is often the only available HEVC decoder path.
-        if (hevc && video.canPlayType(HLS_MIME)) {
+        const hevcLevel = hls.levels.find((level) => /^(hvc1|hev1)/i.test(level.videoCodec || ''))
+        // Safari/iOS native HLS is often the most reliable HEVC decoder path.
+        if (hevcLevel && video.canPlayType(HLS_MIME)) {
           useNative()
           return
+        }
+        if (hevcLevel && typeof MediaSource !== 'undefined') {
+          const codec = hevcLevel.videoCodec || ''
+          if (!MediaSource.isTypeSupported(`video/mp4; codecs="${codec}"`)) {
+            hls.destroy()
+            hls = null
+            hlsRef.current = null
+            update('error', 'Поток H.265/HEVC получен, но этот браузер не поддерживает его декодирование. Откройте камеру в Safari или на устройстве с поддержкой HEVC.')
+            return
+          }
         }
         update('loading', 'Поток найден, запускаем видео…')
         play()
