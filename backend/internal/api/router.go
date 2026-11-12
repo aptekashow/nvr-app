@@ -109,7 +109,10 @@ func (s *Server) listCameras(c echo.Context) error {
 
 func (s *Server) createCamera(c echo.Context) error {
 	var req struct {
-		Name, RTSPUrl, Username, Password string
+		Name     string `json:"name"`
+		RTSPUrl  string `json:"rtsp_url"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad request"})
@@ -118,7 +121,10 @@ func (s *Server) createCamera(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name and rtsp_url required"})
 	}
 	cam, err := s.store.CreateCamera(models.CreateCameraRequest{
-		Name: req.Name, RTSPUrl: req.RTSPUrl, Username: req.Username, Password: req.Password,
+		Name:     req.Name,
+		RTSPUrl:  req.RTSPUrl,
+		Username: req.Username,
+		Password: req.Password,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
