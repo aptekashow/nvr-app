@@ -22,6 +22,18 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcAdditionalHosts: [127.0.0.1]
 
+# Backend is on docker network (not 127.0.0.1) — allow API without auth
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+
 pathDefaults:
   record: no
   sourceOnDemand: yes
