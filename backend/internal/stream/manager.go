@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"nvr-app/internal/config"
 	"nvr-app/internal/models"
 	"nvr-app/internal/store"
@@ -241,17 +242,15 @@ func (m *Manager) ListRecordings(cameraID string) ([]RecordingInfo, error) {
 }
 
 func buildRTSPURL(raw, user, pass string) string {
-	if user == "" {
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "rtsp" && parsed.Scheme != "rtsps") || parsed.Hostname() == "" {
 		return raw
 	}
-	if strings.Contains(raw, "@") {
-		return raw
+	// Credentials embedded in the URL take precedence over separate fields.
+	if parsed.User == nil && user != "" {
+		parsed.User = url.UserPassword(user, pass)
 	}
-	const p = "rtsp://"
-	if strings.HasPrefix(strings.ToLower(raw), p) {
-		return p + user + ":" + pass + "@" + raw[len(p):]
-	}
-	return raw
+	return parsed.String()
 }
 
 func (m *Manager) PublishToMediaMTX(cam *models.Camera) {
