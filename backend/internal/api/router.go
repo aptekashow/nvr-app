@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"nvr-app/internal/config"
 	"nvr-app/internal/models"
@@ -45,8 +46,10 @@ func NewRouter(cfg *config.Config, st *store.MemoryStore, sm *stream.Manager) *e
 	api.POST("/cameras/:id/record/stop", s.stopRecording)
 
 	api.POST("/export", s.exportFragment)
-	api.GET("/archive", s.archiveStub)
-	api.GET("/archive/:cameraId", s.listRecordings)
+
+	api.GET("/archive/:cameraId/days", s.archiveDays)
+	api.GET("/archive/:cameraId/timeline", s.archiveTimeline)
+	api.GET("/archive/:cameraId/thumb", s.archiveThumb)
 
 	return e
 }
@@ -59,12 +62,10 @@ func (s *Server) login(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad request"})
 	}
-
 	user, err := s.store.CheckPassword(req.Username, req.Password)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  user.ID,
 		"user": user.Username,
@@ -74,13 +75,9 @@ func (s *Server) login(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "token error"})
 	}
-
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token": tokenStr,
-		"user": map[string]string{
-			"id":       user.ID,
-			"username": user.Username,
-		},
+		"user": map[string]string{"id": user.ID, "username": user.Username},
 	})
 }
 
@@ -105,18 +102,14 @@ func (s *Server) listCameras(c echo.Context) error {
 	cams := s.store.ListCameras()
 	result := make([]interface{}, 0, len(cams))
 	for _, cam := range cams {
-		status := s.stream.GetStatus(cam)
-		result = append(result, status)
+		result = append(result, s.stream.GetStatus(cam))
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) createCamera(c echo.Context) error {
 	var req struct {
-		Name     string `json:"name"`
-		RTSPUrl  string `json:"rtsp_url"`
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Name, RTSPUrl, Username, Password string
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad request"})
@@ -124,24 +117,18 @@ func (s *Server) createCamera(c echo.Context) error {
 	if req.Name == "" || req.RTSPUrl == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name and rtsp_url required"})
 	}
-
 	cam, err := s.store.CreateCamera(models.CreateCameraRequest{
-		Name:     req.Name,
-		RTSPUrl:  req.RTSPUrl,
-		Username: req.Username,
-		Password: req.Password,
+		Name: req.Name, RTSPUrl: req.RTSPUrl, Username: req.Username, Password: req.Password,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-
 	s.stream.PublishToMediaMTX(cam)
 	return c.JSON(http.StatusCreated, s.stream.GetStatus(cam))
 }
 
 func (s *Server) getCamera(c echo.Context) error {
-	id := c.Param("id")
-	cam, err := s.store.GetCamera(id)
+	cam, err := s.store.GetCamera(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -158,16 +145,14 @@ func (s *Server) deleteCamera(c echo.Context) error {
 }
 
 func (s *Server) startRecording(c echo.Context) error {
-	id := c.Param("id")
-	if err := s.stream.StartRecording(id); err != nil {
+	if err := s.stream.StartRecording(c.Param("id")); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "recording started"})
 }
 
 func (s *Server) stopRecording(c echo.Context) error {
-	id := c.Param("id")
-	if err := s.stream.StopRecording(id); err != nil {
+	if err := s.stream.StopRecording(c.Param("id")); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "recording stopped"})
@@ -176,14 +161,22 @@ func (s *Server) stopRecording(c echo.Context) error {
 func (s *Server) exportFragment(c echo.Context) error {
 	var req struct {
 		CameraID  string    `json:"camera_id"`
+		Day       string    `json:"day"`
+		StartSec  float64   `json:"start_sec"`
+		EndSec    float64   `json:"end_sec"`
 		StartTime time.Time `json:"start_time"`
 		EndTime   time.Time `json:"end_time"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad request"})
 	}
-
-	path, err := s.stream.ExportFragment(req.CameraID, req.StartTime, req.EndTime)
+	var path string
+	var err error
+	if req.Day != "" {
+		path, err = s.stream.ExportFragmentByOffset(req.CameraID, req.Day, req.StartSec, req.EndSec)
+	} else {
+		path, err = s.stream.ExportFragment(req.CameraID, req.StartTime, req.EndTime)
+	}
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
@@ -191,26 +184,46 @@ func (s *Server) exportFragment(c echo.Context) error {
 }
 
 func (s *Server) getPreview(c echo.Context) error {
-	id := c.Param("id")
-	path := filepath.Join(s.cfg.PreviewsDir, id)
+	path := filepath.Join(s.cfg.PreviewsDir, c.Param("id"))
 	if _, err := os.Stat(path); err != nil {
 		return c.NoContent(http.StatusNotFound)
 	}
 	return c.File(path)
 }
 
-func (s *Server) archiveStub(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "Архив в разработке",
-	})
-}
-
-// listRecordings returns list of recording files for a camera (for Archive page)
-func (s *Server) listRecordings(c echo.Context) error {
-	cameraID := c.Param("cameraId")
-	list, err := s.stream.ListRecordings(cameraID)
+func (s *Server) archiveDays(c echo.Context) error {
+	days, err := s.stream.ListRecordingDays(c.Param("cameraId"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, list)
+	return c.JSON(http.StatusOK, days)
+}
+
+func (s *Server) archiveTimeline(c echo.Context) error {
+	day := c.QueryParam("day")
+	if day == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "day required (YYYY-MM-DD)"})
+	}
+	info, err := s.stream.GetTimeline(c.Param("cameraId"), day)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, info)
+}
+
+func (s *Server) archiveThumb(c echo.Context) error {
+	day := c.QueryParam("day")
+	offset := c.QueryParam("offset")
+	if day == "" || offset == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "day and offset required"})
+	}
+	var sec float64
+	if _, err := fmt.Sscanf(offset, "%f", &sec); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bad offset"})
+	}
+	path, err := s.stream.ExtractThumb(c.Param("cameraId"), day, sec)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	return c.File(path)
 }
