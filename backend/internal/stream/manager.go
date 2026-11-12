@@ -82,16 +82,23 @@ func (m *Manager) updateAllPreviews() {
 		if !cam.Enabled {
 			continue
 		}
+		// Do not create an unbounded queue of goroutines when there are many
+		// cameras. Skip this cycle when both preview workers are busy.
+		select {
+		case m.previewSlots <- struct{}{}:
+		default:
+			continue
+		}
 		m.mu.Lock()
 		if m.previewRunning[cam.ID] {
 			m.mu.Unlock()
+			<-m.previewSlots
 			continue
 		}
 		m.previewRunning[cam.ID] = true
 		m.mu.Unlock()
 
 		go func(camera *models.Camera) {
-			m.previewSlots <- struct{}{}
 			defer func() {
 				<-m.previewSlots
 				m.mu.Lock()
@@ -107,20 +114,38 @@ func (m *Manager) updateAllPreviews() {
 // avoids opening competing RTSP sessions and limits thumbnail work to 2 jobs.
 func (m *Manager) capturePreview(cam *models.Camera) {
 	outPath := filepath.Join(m.cfg.PreviewsDir, cam.ID+".jpg")
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	tmpPath := filepath.Join(m.cfg.PreviewsDir, cam.ID+".tmp.jpg")
+
+	// MediaMTX can need up to 15 seconds to start an on-demand RTSP source.
+	// The old 8-second deadline killed FFmpeg before that startup window ended.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-rtsp_transport", "tcp", "-rw_timeout", "5000000",
+		"-rtsp_transport", "tcp", "-rw_timeout", "20000000",
 		"-i", m.mediaMTXStreamURL(cam.ID),
 		"-an", "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "7",
-		outPath,
+		tmpPath,
 	)
-	if err := cmd.Run(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmpPath)
 		m.mu.Lock()
-		m.online[cam.ID] = false
+		// Keep the last good frame visible; only mark the camera offline when
+		// there has never been a frame or the last successful frame is stale.
+		staleAfter := time.Duration(m.cfg.PreviewInterval*3) * time.Second
+		if m.lastFrame[cam.ID].IsZero() || time.Since(m.lastFrame[cam.ID]) > staleAfter {
+			m.online[cam.ID] = false
+		}
 		m.mu.Unlock()
+		log.Printf("[preview] camera %s failed (timeout=%t): %v: %s",
+			cam.ID, ctx.Err() != nil, err, strings.TrimSpace(string(output)))
+		return
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		_ = os.Remove(tmpPath)
+		log.Printf("[preview] camera %s cannot publish JPEG: %v", cam.ID, err)
 		return
 	}
 	m.mu.Lock()
