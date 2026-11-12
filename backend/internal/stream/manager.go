@@ -87,16 +87,11 @@ func (m *Manager) updateAllPreviews() {
 			m.mu.Unlock()
 			continue
 		}
-		select {
-		case m.previewSlots <- struct{}{}:
-			m.previewRunning[cam.ID] = true
-		default:
-			m.mu.Unlock()
-			continue
-		}
+		m.previewRunning[cam.ID] = true
 		m.mu.Unlock()
 
 		go func(camera *models.Camera) {
+			m.previewSlots <- struct{}{}
 			defer func() {
 				<-m.previewSlots
 				m.mu.Lock()
