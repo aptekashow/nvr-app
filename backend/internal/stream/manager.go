@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -18,17 +19,21 @@ import (
 )
 
 type Manager struct {
-	cfg       *config.Config
-	store     *store.MemoryStore
-	mu        sync.Mutex
-	recorders map[string]*recorder
-	online    map[string]bool
-	lastFrame map[string]time.Time
+	cfg           *config.Config
+	store         *store.MemoryStore
+	mu            sync.Mutex
+	recorders     map[string]*recorder
+	online        map[string]bool
+	lastFrame     map[string]time.Time
+	previewRunning map[string]bool
+	previewSlots  chan struct{}
 }
 
 type recorder struct {
-	cmd  *exec.Cmd
-	file string
+	cmd      *exec.Cmd
+	file     string
+	done     chan struct{}
+	stopping bool
 }
 
 type RecordingInfo struct {
@@ -43,64 +48,103 @@ func NewManager(cfg *config.Config, st *store.MemoryStore) *Manager {
 	_ = os.MkdirAll(cfg.RecordingsDir, 0755)
 	_ = os.MkdirAll(cfg.PreviewsDir, 0755)
 	return &Manager{
-		cfg:       cfg,
-		store:     st,
-		recorders: make(map[string]*recorder),
-		online:    make(map[string]bool),
-		lastFrame: make(map[string]time.Time),
+		cfg:            cfg,
+		store:          st,
+		recorders:      make(map[string]*recorder),
+		online:         make(map[string]bool),
+		lastFrame:      make(map[string]time.Time),
+		previewRunning: make(map[string]bool),
+		previewSlots:   make(chan struct{}, 2),
 	}
 }
 
+func (m *Manager) mediaMTXStreamURL(cameraID string) string {
+	base := strings.TrimRight(m.cfg.MediaMTXRTSP, "/")
+	return base + "/" + url.PathEscape(cameraID)
+}
+
+// Start registers all camera paths before any preview or recording reader is
+// started. MediaMTX owns the single upstream RTSP connection per camera.
 func (m *Manager) Start() {
 	for _, cam := range m.store.ListCameras() {
-		go m.PublishToMediaMTX(cam)
+		m.PublishToMediaMTX(cam)
 	}
+	m.updateAllPreviews()
 	ticker := time.NewTicker(time.Duration(m.cfg.PreviewInterval) * time.Second)
 	defer ticker.Stop()
-	for {
+	for range ticker.C {
 		m.updateAllPreviews()
-		<-ticker.C
 	}
 }
 
 func (m *Manager) updateAllPreviews() {
 	for _, cam := range m.store.ListCameras() {
-		if cam.Enabled {
-			go m.capturePreview(cam)
+		if !cam.Enabled {
+			continue
 		}
+		m.mu.Lock()
+		if m.previewRunning[cam.ID] {
+			m.mu.Unlock()
+			continue
+		}
+		select {
+		case m.previewSlots <- struct{}{}:
+			m.previewRunning[cam.ID] = true
+		default:
+			m.mu.Unlock()
+			continue
+		}
+		m.mu.Unlock()
+
+		go func(camera *models.Camera) {
+			defer func() {
+				<-m.previewSlots
+				m.mu.Lock()
+				delete(m.previewRunning, camera.ID)
+				m.mu.Unlock()
+			}()
+			m.capturePreview(camera)
+		}(cam)
 	}
 }
 
+// Preview capture reads the MediaMTX relay, never the physical camera. This
+// avoids opening competing RTSP sessions and limits thumbnail work to 2 jobs.
 func (m *Manager) capturePreview(cam *models.Camera) {
 	outPath := filepath.Join(m.cfg.PreviewsDir, cam.ID+".jpg")
-	src := buildRTSPURL(cam.RTSPUrl, cam.Username, cam.Password)
-	cmd := exec.Command("ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", src,
-		"-frames:v", "1", "-q:v", "5", outPath)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	err := cmd.Run()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+		"-rtsp_transport", "tcp", "-rw_timeout", "5000000",
+		"-i", m.mediaMTXStreamURL(cam.ID),
+		"-an", "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "7",
+		outPath,
+	)
+	if err := cmd.Run(); err != nil {
+		m.mu.Lock()
 		m.online[cam.ID] = false
+		m.mu.Unlock()
 		return
 	}
+	m.mu.Lock()
 	m.online[cam.ID] = true
 	m.lastFrame[cam.ID] = time.Now()
+	m.mu.Unlock()
 }
 
 func (m *Manager) GetStatus(cam *models.Camera) models.CameraStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	online := m.online[cam.ID]
 	preview := ""
-	if online {
+	if m.online[cam.ID] {
 		preview = "/api/previews/" + cam.ID + ".jpg"
 	}
 	return models.CameraStatus{
 		ID:          cam.ID,
 		Name:        cam.Name,
-		Online:      online,
+		Online:      m.online[cam.ID],
 		Recording:   cam.Recording,
 		PreviewURL:  preview,
 		LastFrameAt: m.lastFrame[cam.ID],
@@ -113,37 +157,67 @@ func (m *Manager) StartRecording(cameraID string) error {
 	if err != nil {
 		return err
 	}
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, exists := m.recorders[cameraID]; exists {
+		m.mu.Unlock()
 		return fmt.Errorf("already recording")
 	}
-	day := time.Now().Format("2006-01-02")
+
 	dir := filepath.Join(m.cfg.RecordingsDir, cameraID)
-	_ = os.MkdirAll(dir, 0755)
-	outFile := filepath.Join(dir, day+".mp4")
-	if _, err := os.Stat(outFile); err == nil {
-		outFile = filepath.Join(dir, day+"_"+time.Now().Format("150405")+".mp4")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("create recording directory: %w", err)
 	}
-	src := buildRTSPURL(cam.RTSPUrl, cam.Username, cam.Password)
-	args := []string{"-y", "-rtsp_transport", "tcp", "-i", src,
-		"-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", "-f", "mp4", outFile}
+	outFile := filepath.Join(dir, time.Now().Format("2006-01-02_15-04-05.000")+".mp4")
+
+	// Read from MediaMTX instead of opening the physical camera a second time.
+	// Both video and audio are stream-copied: no codec conversion is performed.
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-nostdin", "-n",
+		"-rtsp_transport", "tcp", "-rw_timeout", "15000000",
+		"-i", m.mediaMTXStreamURL(cameraID),
+		"-map", "0:v:0", "-map", "0:a?",
+		"-c", "copy",
+		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+		"-flush_packets", "1",
+		"-f", "mp4", outFile,
+	}
 	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ffmpeg: %w", err)
+		m.mu.Unlock()
+		return fmt.Errorf("failed to start stream-copy recorder: %w", err)
 	}
-	m.recorders[cameraID] = &recorder{cmd: cmd, file: outFile}
-	go func() {
-		_ = cmd.Wait()
-		m.mu.Lock()
+
+	rec := &recorder{cmd: cmd, file: outFile, done: make(chan struct{})}
+	m.recorders[cameraID] = rec
+	if err := m.store.SetRecording(cameraID, true); err != nil {
 		delete(m.recorders, cameraID)
 		m.mu.Unlock()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("update recording status: %w", err)
+	}
+	m.mu.Unlock()
+
+	go func() {
+		err := cmd.Wait()
+		m.mu.Lock()
+		stopping := rec.stopping
+		if current := m.recorders[cameraID]; current == rec {
+			delete(m.recorders, cameraID)
+		}
+		m.mu.Unlock()
+		if err != nil && !stopping {
+			log.Printf("[record] camera %s recorder stopped: %v", cameraID, err)
+		}
 		_ = m.store.SetRecording(cameraID, false)
+		close(rec.done)
 	}()
-	_ = m.store.SetRecording(cameraID, true)
-	log.Printf("[record] started %s → %s", cam.Name, outFile)
+
+	log.Printf("[record] started stream-copy %s -> %s", cam.Name, outFile)
 	return nil
 }
 
@@ -154,16 +228,32 @@ func (m *Manager) StopRecording(cameraID string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("not recording")
 	}
-	delete(m.recorders, cameraID)
+	if rec.stopping {
+		done := rec.done
+		m.mu.Unlock()
+		<-done
+		return nil
+	}
+	rec.stopping = true
 	m.mu.Unlock()
+
+	// SIGINT lets FFmpeg close the fragmented MP4 cleanly. Kill only if it
+	// doesn't exit within the grace period.
 	if rec.cmd.Process != nil {
 		_ = rec.cmd.Process.Signal(os.Interrupt)
-		time.Sleep(2 * time.Second)
-		_ = rec.cmd.Process.Kill()
 	}
-	_ = m.store.SetRecording(cameraID, false)
-	log.Printf("[record] stopped %s", cameraID)
-	return nil
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-rec.done:
+		return nil
+	case <-timer.C:
+		if rec.cmd.Process != nil {
+			_ = rec.cmd.Process.Kill()
+		}
+		<-rec.done
+		return nil
+	}
 }
 
 func (m *Manager) ExportFragment(cameraID string, start, end time.Time) (string, error) {
@@ -288,4 +378,24 @@ func (m *Manager) PublishToMediaMTX(cam *models.Camera) {
 		}
 	}
 	log.Printf("[mediamtx] failed to publish path %s", name)
+}
+
+func (m *Manager) RemoveFromMediaMTX(cameraID string) {
+	endpoint := fmt.Sprintf("%s/v3/config/paths/delete/%s", m.cfg.MediaMTXAPI, cameraID)
+	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		log.Printf("[mediamtx] delete path %s: %v", cameraID, err)
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[mediamtx] delete path %s: %v", cameraID, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[mediamtx] delete path %s -> %s %s", cameraID, resp.Status, string(body))
+	}
 }
