@@ -3,17 +3,15 @@ version: "3.8"
 services:
   mediamtx:
     image: bluenviron/mediamtx:latest
-    container_name: mediamtx
+    container_name: nvr-mediamtx
     restart: unless-stopped
     ports:
-      - "8554:8554"   # RTSP
-      - "1935:1935"   # RTMP
-      - "8888:8888"   # HLS
-      - "8889:8889"   # WebRTC
-      - "9997:9997"   # API
+      - "8554:8554"
+      - "8888:8888"
+      - "8889:8889"
+      - "9997:9997"
     volumes:
-      - ./mediamtx.yml:/mediamtx.yml
-      - mediamtx_recordings:/recordings
+      - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
       - MTX_WEBRTCADDITIONALHOSTS=127.0.0.1
 
@@ -21,21 +19,31 @@ services:
     build: ../backend
     container_name: nvr-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-    volumes:
-      - ../backend:/app
-      - recordings:/data/recordings
-      - previews:/data/previews
     environment:
+      - HTTP_PORT=8080
       - MEDIAMTX_API=http://mediamtx:9997
       - RECORDINGS_DIR=/data/recordings
       - PREVIEWS_DIR=/data/previews
-      - JWT_SECRET=change-me-in-production
+      - JWT_SECRET=${JWT_SECRET:-change-me-please-use-long-random-string}
+      - TZ=${TZ:-Europe/Moscow}
+    volumes:
+      - nvr_recordings:/data/recordings
+      - nvr_previews:/data/previews
     depends_on:
+      - mediamtx
+    expose:
+      - "8080"
+
+  frontend:
+    build: ../frontend
+    container_name: nvr-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
       - mediamtx
 
 volumes:
-  mediamtx_recordings:
-  recordings:
-  previews:
+  nvr_recordings:
+  nvr_previews:
