@@ -11,22 +11,15 @@ rtspTransports: [tcp, udp]
 hls: yes
 hlsAddress: :8888
 hlsAlwaysRemux: yes
-hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
-hlsPartDuration: 200ms
-hlsSegmentMaxSize: 50M
 hlsAllowOrigins: ['*']
 
-webrtc: yes
-webrtcAddress: :8889
-webrtcAdditionalHosts: [127.0.0.1]
+webrtc: no
 
-# Backend is on docker network (not 127.0.0.1) — allow API without auth
 authInternalUsers:
   - user: any
-    pass:
-    ips: []
+    pass: ""
     permissions:
       - action: publish
       - action: read
@@ -35,10 +28,7 @@ authInternalUsers:
       - action: metrics
 
 pathDefaults:
-  record: no
   sourceOnDemand: yes
-  sourceOnDemandStartTimeout: 15s
-  sourceOnDemandCloseAfter: 30s
   rtspTransport: tcp
 
 paths:
