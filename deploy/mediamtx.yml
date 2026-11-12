@@ -27,9 +27,5 @@ authInternalUsers:
       - action: api
       - action: metrics
 
-pathDefaults:
-  sourceOnDemand: yes
-  rtspTransport: tcp
-
 paths:
   all_others:
