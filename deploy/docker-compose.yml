@@ -20,11 +20,13 @@ services:
       - MEDIAMTX_API=http://mediamtx:9997
       - RECORDINGS_DIR=/data/recordings
       - PREVIEWS_DIR=/data/previews
+      - CAMERAS_FILE=/data/config/cameras.json
       - JWT_SECRET=${JWT_SECRET:-change-me-please-use-long-random-string}
       - TZ=${TZ:-Europe/Moscow}
     volumes:
       - nvr_recordings:/data/recordings
       - nvr_previews:/data/previews
+      - nvr_config:/data/config
     depends_on:
       - mediamtx
     expose:
@@ -43,3 +45,4 @@ services:
 volumes:
   nvr_recordings:
   nvr_previews:
+  nvr_config:

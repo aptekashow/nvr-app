@@ -1,8 +1,6 @@
 package config
 
-import (
-	"os"
-)
+import "os"
 
 type Config struct {
 	HTTPPort        string
@@ -10,7 +8,8 @@ type Config struct {
 	MediaMTXAPI     string
 	RecordingsDir   string
 	PreviewsDir     string
-	PreviewInterval int // seconds
+	CamerasFile     string
+	PreviewInterval int
 }
 
 func Load() *Config {
@@ -20,13 +19,12 @@ func Load() *Config {
 		MediaMTXAPI:     getEnv("MEDIAMTX_API", "http://localhost:9997"),
 		RecordingsDir:   getEnv("RECORDINGS_DIR", "./data/recordings"),
 		PreviewsDir:     getEnv("PREVIEWS_DIR", "./data/previews"),
+		CamerasFile:     getEnv("CAMERAS_FILE", "./data/cameras.json"),
 		PreviewInterval: 10,
 	}
 }
 
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
+	if v := os.Getenv(key); v != "" { return v }
 	return fallback
 }

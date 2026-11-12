@@ -12,9 +12,9 @@ type User struct {
 type Camera struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
-	RTSPUrl   string    `json:"rtsp_url"`
-	Username  string    `json:"username,omitempty"`
-	Password  string    `json:"password,omitempty"`
+	RTSPUrl   string    `json:"-"`
+	Username  string    `json:"-"`
+	Password  string    `json:"-"`
 	Enabled   bool      `json:"enabled"`
 	Recording bool      `json:"recording"`
 	CreatedAt time.Time `json:"created_at"`
