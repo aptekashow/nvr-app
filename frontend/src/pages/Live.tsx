@@ -98,10 +98,8 @@ export default function Live() {
       retryTimer = setTimeout(() => {
         if (disposed) return
         if (hls) {
-          // Fetch a fresh master playlist: MediaMTX HLS session URLs expire
-          // after inactivity, so restarting only the old child playlist is insufficient.
-          hls.stopLoad()
-          hls.loadSource(source)
+          // Resume the existing HLS controller. Reloading the source here aborts
+          // in-flight fragment requests and can create an endless cancel/retry loop.
           hls.startLoad(-1)
         } else if (nativeMode) {
           video.load()
