@@ -18,6 +18,7 @@ services:
     environment:
       - HTTP_PORT=8080
       - MEDIAMTX_API=http://mediamtx:9997
+      - MEDIAMTX_RTSP=rtsp://mediamtx:8554
       - RECORDINGS_DIR=/data/recordings
       - PREVIEWS_DIR=/data/previews
       - CAMERAS_FILE=/data/config/cameras.json

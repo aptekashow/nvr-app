@@ -6,6 +6,7 @@ type Config struct {
 	HTTPPort        string
 	JWTSecret       string
 	MediaMTXAPI     string
+	MediaMTXRTSP    string
 	RecordingsDir   string
 	PreviewsDir     string
 	CamerasFile     string
@@ -17,14 +18,17 @@ func Load() *Config {
 		HTTPPort:        getEnv("HTTP_PORT", "8080"),
 		JWTSecret:       getEnv("JWT_SECRET", "change-me-in-production-please"),
 		MediaMTXAPI:     getEnv("MEDIAMTX_API", "http://localhost:9997"),
+		MediaMTXRTSP:    getEnv("MEDIAMTX_RTSP", "rtsp://mediamtx:8554"),
 		RecordingsDir:   getEnv("RECORDINGS_DIR", "./data/recordings"),
 		PreviewsDir:     getEnv("PREVIEWS_DIR", "./data/previews"),
 		CamerasFile:     getEnv("CAMERAS_FILE", "./data/cameras.json"),
-		PreviewInterval: 10,
+		PreviewInterval: 30,
 	}
 }
 
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" { return v }
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
 	return fallback
 }

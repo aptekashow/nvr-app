@@ -67,7 +67,12 @@ export default function Live() {
     if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
+        lowLatencyMode: false,
+        capLevelToPlayerSize: true,
+        maxBufferLength: 12,
+        backBufferLength: 30,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
         manifestLoadingMaxRetry: 8,
         manifestLoadingRetryDelay: 1000,
         manifestLoadingMaxRetryTimeout: 8000,
