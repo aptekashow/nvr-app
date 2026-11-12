@@ -265,6 +265,17 @@ export default function Live() {
             {playerState === 'error' && camera && (
               <button className="btn primary" onClick={retry}>Переподключить</button>
             )}
+            {playerState === 'waiting' && (
+              <button
+                className="btn primary"
+                onClick={() => {
+                  const video = videoRef.current
+                  if (video) video.play().then(() => setPlayerState('playing')).catch(() => setMessage('Не удалось запустить видео. Проверьте поддержку кодека браузером.'))
+                }}
+              >
+                Запустить видео
+              </button>
+            )}
           </div>
         )}
       </section>
