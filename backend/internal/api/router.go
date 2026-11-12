@@ -84,13 +84,16 @@ func (s *Server) login(c echo.Context) error {
 func (s *Server) jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := c.Request().Header.Get("Authorization")
-		if auth == "" || len(auth) < 8 {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing token"})
+		if !strings.HasPrefix(auth, "Bearer ") || len(auth) <= len("Bearer ") {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing bearer token"})
 		}
-		tokenStr := auth[7:]
+		tokenStr := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			if t.Method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
 			return []byte(s.cfg.JWTSecret), nil
-		})
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 		if err != nil || !token.Valid {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		}
@@ -190,7 +193,11 @@ func (s *Server) exportFragment(c echo.Context) error {
 }
 
 func (s *Server) getPreview(c echo.Context) error {
-	path := filepath.Join(s.cfg.PreviewsDir, c.Param("id"))
+	name := c.Param("id")
+	if name == "" || filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
+		return c.NoContent(http.StatusBadRequest)
+	}
+	path := filepath.Join(s.cfg.PreviewsDir, name)
 	if _, err := os.Stat(path); err != nil {
 		return c.NoContent(http.StatusNotFound)
 	}
