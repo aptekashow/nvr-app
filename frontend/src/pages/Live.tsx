@@ -20,17 +20,12 @@ export default function Live() {
     })
   }, [id])
 
-  const buildHlsUrl = (c: CameraStatus) => {
-    const host = window.location.hostname
-    return `http://${host}:8888/${c.id}/index.m3u8`
-  }
-
   useEffect(() => {
     if (!cam || !videoRef.current) return
 
     const video = videoRef.current
     let hls: Hls | null = null
-    const src = buildHlsUrl(cam)
+    const src = cam.hls_url
     setError('')
 
     if (Hls.isSupported()) {
