@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { getCameras, createCamera, deleteCamera, startRecording, stopRecording, CameraStatus } from '../api'
 import './Dashboard.css'
@@ -13,10 +13,14 @@ export default function Dashboard({ onLogout }: Props) {
   const [loadError, setLoadError] = useState('')
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [busyCameraId, setBusyCameraId] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', rtsp_url: '', username: '', password: '' })
+  const loadInFlight = useRef(false)
 
   const load = useCallback(async () => {
+    if (loadInFlight.current) return
+    loadInFlight.current = true
     try {
       const data = await getCameras()
       setCameras(data)
@@ -25,13 +29,24 @@ export default function Dashboard({ onLogout }: Props) {
       setLoadError(e instanceof Error ? e.message : 'Не удалось загрузить камеры')
     } finally {
       setLoading(false)
+      loadInFlight.current = false
     }
   }, [])
 
+  // Schedule the next refresh after the current request finishes. This avoids
+  // overlapping API calls when the page is slow or the camera list is large.
   useEffect(() => {
-    load()
-    const t = setInterval(load, 10000)
-    return () => clearInterval(t)
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      await load()
+      if (!cancelled) timer = setTimeout(refresh, 15000)
+    }
+    void refresh()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [load])
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -74,12 +89,16 @@ export default function Dashboard({ onLogout }: Props) {
   }
 
   const toggleRecord = async (cam: CameraStatus) => {
+    if (busyCameraId) return
+    setBusyCameraId(cam.id)
     try {
       if (cam.recording) await stopRecording(cam.id)
       else await startRecording(cam.id)
-      load()
-    } catch (err: any) {
-      alert(err.message)
+      await load()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Не удалось изменить состояние записи')
+    } finally {
+      setBusyCameraId('')
     }
   }
 
@@ -113,7 +132,12 @@ export default function Dashboard({ onLogout }: Props) {
                 <Link to={`/live/${cam.id}`} className="preview-link">
                   <div className="preview">
                     {cam.online && cam.preview_url ? (
-                      <img src={`${cam.preview_url}?t=${Date.now()}`} alt={cam.name} loading="lazy" />
+                      <img
+                        src={`${cam.preview_url}?t=${encodeURIComponent(cam.last_frame_at || '')}`}
+                        alt={cam.name}
+                        loading="lazy"
+                        decoding="async"
+                      />
                     ) : (
                       <div className="no-preview">Превью недоступно</div>
                     )}
@@ -127,8 +151,13 @@ export default function Dashboard({ onLogout }: Props) {
                 <div className="card-footer">
                   <span className="name">{cam.name}</span>
                   <div className="card-actions">
-                    <button className="icon-btn" title={cam.recording ? 'Остановить запись' : 'Начать запись'} onClick={() => toggleRecord(cam)}>
-                      {cam.recording ? '⏹' : '⏺'}
+                    <button
+                      className="icon-btn"
+                      title={cam.recording ? 'Остановить запись' : 'Начать запись'}
+                      disabled={busyCameraId === cam.id}
+                      onClick={() => toggleRecord(cam)}
+                    >
+                      {busyCameraId === cam.id ? '…' : cam.recording ? '⏹' : '⏺'}
                     </button>
                     <button className="icon-btn danger" title="Удалить" onClick={() => handleDelete(cam.id, cam.name)}>×</button>
                   </div>
