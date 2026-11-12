@@ -1,191 +1,256 @@
-import { useEffect, useRef, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import Hls from 'hls.js'
-import { getCameras, CameraStatus } from '../api'
+import { getCameras, type CameraStatus } from '../api'
 import './Live.css'
 
 const HLS_MIME = 'application/vnd.apple.mpegurl'
+const MAX_RETRIES = 8
+
+type PlayerState = 'loading' | 'playing' | 'waiting' | 'error'
 
 export default function Live() {
   const { id } = useParams<{ id: string }>()
   const videoRef = useRef<HTMLVideoElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [cam, setCam] = useState<CameraStatus | null>(null)
-  const [loading, setLoading] = useState(true)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const hlsRef = useRef<Hls | null>(null)
+  const [camera, setCamera] = useState<CameraStatus | null>(null)
+  const [pageLoading, setPageLoading] = useState(true)
+  const [playerState, setPlayerState] = useState<PlayerState>('loading')
+  const [message, setMessage] = useState('Подключаемся к камере…')
   const [scale, setScale] = useState(1)
-  const [error, setError] = useState('')
-  const [retryKey, setRetryKey] = useState(0)
+  const [attempt, setAttempt] = useState(0)
+  const [manualRetry, setManualRetry] = useState(0)
 
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    setError('')
-    setCam(null)
-    if (!id) return
+    let alive = true
+    if (!id) {
+      setPageLoading(false)
+      setMessage('Не указан идентификатор камеры')
+      setPlayerState('error')
+      return
+    }
+
+    setPageLoading(true)
     getCameras()
-      .then((list: CameraStatus[]) => {
-        if (!active) return
-        const found = list.find((c) => c.id === id)
-        if (!found) setError('Камера не найдена')
-        setCam(found || null)
+      .then((items: CameraStatus[]) => {
+        if (!alive) return
+        const found = items.find((item) => item.id === id)
+        setCamera(found ?? null)
+        if (!found) {
+          setMessage('Камера не найдена')
+          setPlayerState('error')
+        }
       })
-      .catch((e: Error) => {
-        if (active) setError(e.message || 'Не удалось загрузить список камер')
+      .catch((error: unknown) => {
+        if (!alive) return
+        setMessage(error instanceof Error ? error.message : 'Не удалось получить список камер')
+        setPlayerState('error')
       })
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+      .finally(() => {
+        if (alive) setPageLoading(false)
+      })
+
+    return () => { alive = false }
   }, [id])
 
+  const retry = useCallback(() => {
+    setAttempt(0)
+    setMessage('Повторное подключение…')
+    setPlayerState('loading')
+    setManualRetry((value) => value + 1)
+  }, [])
+
   useEffect(() => {
-    if (!cam?.hls_url || !videoRef.current) return
     const video = videoRef.current
+    const source = camera?.hls_url
+    if (!video || !source) return
+
+    let disposed = false
     let hls: Hls | null = null
     let retryTimer: ReturnType<typeof setTimeout> | undefined
-    let retries = 0
-    let disposed = false
-    let nativeErrorHandler: (() => void) | undefined
-    let nativeMetadataHandler: (() => void) | undefined
-    const src = cam.hls_url
-    setError('')
+    let retryCount = 0
+    let nativeMode = false
 
-    const isHevcStream = () =>
-      Boolean(hls?.levels.some((level) => /^(hvc1|hev1)/i.test(level.videoCodec || '')))
+    const update = (state: PlayerState, text: string) => {
+      if (disposed) return
+      setPlayerState(state)
+      setMessage(text)
+    }
 
-    const hevcNotSupported = () => {
-      if (!hls || typeof MediaSource === 'undefined') return false
-      return hls.levels.some((level) => {
-        const codec = level.videoCodec || ''
-        return /^(hvc1|hev1)/i.test(codec) &&
-          !MediaSource.isTypeSupported(`video/mp4; codecs="${codec}"`)
+    const play = () => {
+      if (disposed) return
+      video.play().then(() => {
+        update('playing', '')
+      }).catch(() => {
+        // Autoplay can be blocked by browser policy. The native controls remain available.
+        update('waiting', 'Нажмите ▶ на видео, чтобы начать просмотр')
       })
     }
 
-    const showHevcHelp = () => {
-      setError('Камера передаёт H.265/HEVC, но этот браузер или устройство не поддерживает его аппаратное/программное декодирование. Попробуйте Safari на совместимом устройстве или браузер с поддержкой HEVC.')
-    }
-
-    const retry = (message: string) => {
+    const retryLater = (reason: string) => {
       if (disposed) return
-      if (retries >= 8) {
-        setError(message + '. Проверьте RTSP-адрес, логин и доступность камеры.')
+      if (retryCount >= MAX_RETRIES) {
+        update('error', reason + '. Нажмите «Переподключить», чтобы попробовать снова.')
         return
       }
-      retries += 1
-      setError(message + ` (повтор ${retries}/8)…`)
+      retryCount += 1
+      update('waiting', reason + ' · повтор ' + retryCount + '/' + MAX_RETRIES)
+      if (retryTimer) clearTimeout(retryTimer)
       retryTimer = setTimeout(() => {
         if (disposed) return
         if (hls) {
           hls.stopLoad()
-          hls.loadSource(src)
-          hls.startLoad()
-        } else {
+          hls.startLoad(-1)
+        } else if (nativeMode) {
           video.load()
         }
-      }, Math.min(1000 * retries, 5000))
+      }, Math.min(1000 * retryCount, 6000))
     }
 
+    const onPlaying = () => update('playing', '')
+    const onWaiting = () => update('waiting', 'Буферизация видеопотока…')
+    const onStalled = () => update('waiting', 'Поток временно задерживается…')
+    const onNativeError = () => retryLater('Браузер не смог воспроизвести HLS-поток')
     const onNativeMetadata = () => {
-      video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
-    }
-    const onNativeError = () => {
-      retry('Браузер не смог открыть HLS-поток. Проверьте загрузку плейлиста, сегментов и поддержку кодека')
+      retryCount = 0
+      play()
     }
 
-    // Prefer native HLS where available (notably Safari), as its platform
-    // decoder often has broader HEVC support than Media Source Extensions.
-    // Prefer hls.js when MSE is available. Some Chromium builds report
-    // native HLS support inconsistently and then fail without useful details.
-    // Use native HLS only as a fallback (notably Safari/iOS).
-    if (!Hls.isSupported() && video.canPlayType(HLS_MIME)) {
-      nativeMetadataHandler = onNativeMetadata
-      nativeErrorHandler = onNativeError
-      video.addEventListener('loadedmetadata', onNativeMetadata, { once: true })
+    video.addEventListener('playing', onPlaying)
+    video.addEventListener('waiting', onWaiting)
+    video.addEventListener('stalled', onStalled)
+
+    const useNative = () => {
+      if (disposed) return
+      nativeMode = true
+      if (hls) {
+        hls.destroy()
+        hls = null
+        hlsRef.current = null
+      }
+      video.addEventListener('loadedmetadata', onNativeMetadata)
       video.addEventListener('error', onNativeError)
-      video.src = src
+      video.src = source
       video.load()
-    } else if (Hls.isSupported()) {
+      update('loading', 'Открываем поток встроенным HLS-плеером…')
+    }
+
+    if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        capLevelToPlayerSize: true,
-        maxBufferLength: 12,
-        backBufferLength: 30,
+        backBufferLength: 20,
+        maxBufferLength: 10,
+        maxMaxBufferLength: 20,
         liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 6,
-        manifestLoadingMaxRetry: 8,
-        manifestLoadingRetryDelay: 1000,
-        manifestLoadingMaxRetryTimeout: 8000,
-        levelLoadingMaxRetry: 8,
-        levelLoadingRetryDelay: 1000,
+        liveMaxLatencyDurationCount: 7,
+        capLevelToPlayerSize: true,
+        startLevel: -1,
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 800,
+        manifestLoadingMaxRetryTimeout: 10000,
+        levelLoadingMaxRetry: 6,
+        levelLoadingRetryDelay: 800,
         fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 1000,
+        fragLoadingRetryDelay: 800,
       })
-      hls.loadSource(src)
-      hls.attachMedia(video)
+      hlsRef.current = hls
+
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        if (!disposed) update('loading', 'Получаем видеопоток…')
+      })
+
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (hevcNotSupported()) {
-          showHevcHelp()
-          hls?.destroy()
-          hls = null
+        if (disposed || !hls) return
+        retryCount = 0
+        const hevc = hls.levels.some((level) => /^(hvc1|hev1)/i.test(level.videoCodec || ''))
+        // Safari/iOS native HLS is often the only available HEVC decoder path.
+        if (hevc && video.canPlayType(HLS_MIME)) {
+          useNative()
           return
         }
-        setError('')
-        retries = 0
-        video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
+        update('loading', 'Поток найден, запускаем видео…')
+        play()
       })
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (!data.fatal || disposed) return
+
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (!disposed && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          retryCount = 0
+        }
+      })
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (disposed || !data.fatal) return
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          retryLater('Поток временно недоступен')
+          return
+        }
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (isHevcStream() && hevcNotSupported()) {
-            showHevcHelp()
-            hls?.destroy()
-            hls = null
+          const codec = hls?.levels[hls.currentLevel]?.videoCodec || ''
+          const hevc = /^(hvc1|hev1)/i.test(codec)
+          if (hevc && video.canPlayType(HLS_MIME)) {
+            useNative()
             return
           }
-          hls?.recoverMediaError()
+          try {
+            hls?.recoverMediaError()
+            update('waiting', 'Восстанавливаем видеодекодер…')
+          } catch {
+            retryLater('Ошибка декодирования видео')
+          }
           return
         }
-        retry(data.details || 'Поток пока недоступен')
+        retryLater('Ошибка HLS-плеера: ' + data.details)
       })
+
+      hls.loadSource(source)
+      hls.attachMedia(video)
+    } else if (video.canPlayType(HLS_MIME)) {
+      useNative()
     } else {
-      setError('Этот браузер не поддерживает HLS. Для H.265/HEVC также требуется поддержка кодека устройством.')
+      update('error', 'Этот браузер не поддерживает HLS. Для H.265/HEVC нужен браузер и устройство с поддержкой HEVC.')
     }
 
     return () => {
       disposed = true
       if (retryTimer) clearTimeout(retryTimer)
       if (hls) hls.destroy()
-      if (nativeMetadataHandler) video.removeEventListener('loadedmetadata', nativeMetadataHandler)
-      if (nativeErrorHandler) video.removeEventListener('error', nativeErrorHandler)
+      if (hlsRef.current === hls) hlsRef.current = null
+      video.removeEventListener('playing', onPlaying)
+      video.removeEventListener('waiting', onWaiting)
+      video.removeEventListener('stalled', onStalled)
+      video.removeEventListener('loadedmetadata', onNativeMetadata)
+      video.removeEventListener('error', onNativeError)
       video.pause()
       video.removeAttribute('src')
       video.load()
     }
-  }, [cam?.id, cam?.hls_url, retryKey])
+  }, [camera?.id, camera?.hls_url, manualRetry])
 
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      setScale((prev) => Math.min(Math.max(prev - e.deltaY * 0.0015, 1), 5))
+    const element = stageRef.current
+    if (!element) return
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      setScale((value) => Math.min(5, Math.max(1, value - event.deltaY * 0.0015)))
     }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
+    element.addEventListener('wheel', onWheel, { passive: false })
+    return () => element.removeEventListener('wheel', onWheel)
   }, [])
 
   const resetZoom = () => setScale(1)
 
   return (
-    <div className="live-page">
-      <div className="live-header">
+    <main className="live-page">
+      <header className="live-header">
         <Link to="/" className="back">← Назад</Link>
-        <h1>{cam?.name || 'Прямой эфир'}</h1>
-        {cam && <span className={`badge ${cam.online ? 'online' : 'offline'}`}>{cam.online ? 'Online' : 'Ожидание потока'}</span>}
-        <span className="zoom-hint">Колесо мыши — зум · двойной клик — сброс</span>
-      </div>
+        <h1>{camera?.name || 'Прямой эфир'}</h1>
+        {camera && <span className={`badge ${camera.online ? 'online' : 'offline'}`}>{camera.online ? 'Online' : 'Ожидание потока'}</span>}
+        <span className="zoom-hint">Колесо мыши — масштаб · двойной клик — сброс</span>
+      </header>
 
-      <div className="live-stage" ref={containerRef} onDoubleClick={resetZoom}>
+      <section className="live-stage" ref={stageRef} onDoubleClick={resetZoom}>
         <video
           ref={videoRef}
           className="live-video"
@@ -194,15 +259,17 @@ export default function Live() {
           autoPlay
           playsInline
           controls
+          preload="none"
         />
-        {loading && <div className="live-overlay">Загрузка камеры…</div>}
-        {!loading && error && (
-          <div className="live-overlay live-error-panel">
-            <span>{error}</span>
-            {cam && <button className="btn primary" onClick={() => { setError(''); setRetryKey((v) => v + 1) }}>Повторить подключение</button>}
+        {(pageLoading || playerState !== 'playing') && (
+          <div className={`live-overlay ${playerState === 'error' ? 'live-error-panel' : ''}`}>
+            <span>{pageLoading ? 'Загрузка камеры…' : message}</span>
+            {playerState === 'error' && camera && (
+              <button className="btn primary" onClick={retry}>Переподключить</button>
+            )}
           </div>
         )}
-      </div>
-    </div>
+      </section>
+    </main>
   )
 }
