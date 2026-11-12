@@ -20,24 +20,36 @@ export default function Live() {
     })
   }, [id])
 
+  const buildHlsUrl = (c: CameraStatus) => {
+    const host = window.location.hostname
+    return `http://${host}:8888/${c.id}/index.m3u8`
+  }
+
   useEffect(() => {
-    if (!cam?.hls_url || !videoRef.current) return
+    if (!cam || !videoRef.current) return
 
     const video = videoRef.current
     let hls: Hls | null = null
+    const src = buildHlsUrl(cam)
+    setError('')
 
     if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: true })
-      hls.loadSource(cam.hls_url)
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      })
+      hls.loadSource(src)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => {})
       })
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) setError('Ошибка воспроизведения потока')
+        if (data.fatal) {
+          setError(`Ошибка потока: ${src}`)
+        }
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = cam.hls_url
+      video.src = src
       video.play().catch(() => {})
     } else {
       setError('HLS не поддерживается в этом браузере')
@@ -46,12 +58,11 @@ export default function Live() {
     return () => {
       if (hls) hls.destroy()
     }
-  }, [cam?.hls_url])
+  }, [cam?.id])
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       setScale((prev) => {
@@ -59,7 +70,6 @@ export default function Live() {
         return Math.min(Math.max(next, 1), 5)
       })
     }
-
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
@@ -82,31 +92,24 @@ export default function Live() {
       <div className="live-header">
         <Link to="/" className="back">← Назад</Link>
         <h1>{cam.name}</h1>
-        <div className="live-status">
-          <span className={`dot ${cam.online ? 'online' : 'offline'}`} />
-          {cam.online ? 'В сети' : 'Не в сети'}
-          {cam.recording && <span className="rec">● REC</span>}
-        </div>
-        <div className="zoom-info">{scale.toFixed(1)}x</div>
+        <span className={`badge ${cam.online ? 'online' : 'offline'}`}>
+          {cam.online ? 'Online' : 'Offline'}
+        </span>
+        <span className="zoom-hint">Колесо мыши — зум · двойной клик — сброс</span>
       </div>
 
-      <div className="player-wrap" ref={containerRef} onDoubleClick={resetZoom}>
-        {error ? (
-          <div className="live-error">{error}</div>
-        ) : (
-          <video
-            ref={videoRef}
-            className="player"
-            style={{ transform: `scale(${scale})` }}
-            muted
-            playsInline
-            controls={false}
-          />
-        )}
-      </div>
+      {error && <div className="live-error">{error}</div>}
 
-      <div className="live-hint">
-        Колёсико мыши — зум · Двойной клик — сброс
+      <div className="live-stage" ref={containerRef} onDoubleClick={resetZoom}>
+        <video
+          ref={videoRef}
+          className="live-video"
+          style={{ transform: `scale(${scale})` }}
+          muted
+          autoPlay
+          playsInline
+          controls={false}
+        />
       </div>
     </div>
   )

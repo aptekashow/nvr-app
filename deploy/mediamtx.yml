@@ -1,36 +1,33 @@
-###############################################
-# MediaMTX config for NVR
-###############################################
-
 logLevel: info
 logDestinations: [stdout]
 
-# API
 api: yes
 apiAddress: :9997
 
-# RTSP
 rtsp: yes
 rtspAddress: :8554
 protocols: [tcp, udp]
 
-# HLS
 hls: yes
 hlsAddress: :8888
 hlsAlwaysRemux: yes
+hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 hlsPartDuration: 200ms
 hlsSegmentMaxSize: 50M
+hlsAllowOrigins: ['*']
 
-# WebRTC
 webrtc: yes
 webrtcAddress: :8889
 webrtcAdditionalHosts: [127.0.0.1]
 
-# Recording managed from our backend via FFmpeg
 pathDefaults:
   record: no
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 15s
+  sourceOnDemandCloseAfter: 30s
+  rtspTransport: tcp
 
 paths:
   all_others:
