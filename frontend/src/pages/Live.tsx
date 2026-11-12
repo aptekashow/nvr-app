@@ -88,12 +88,15 @@ export default function Live() {
       video.play().catch(() => setError('Нажмите ▶ для запуска видео'))
     }
     const onNativeError = () => {
-      retry('Не удалось открыть HLS-поток. Если камера использует H.265/HEVC, проверьте поддержку этого кодека браузером и устройством')
+      retry('Браузер не смог открыть HLS-поток. Проверьте загрузку плейлиста, сегментов и поддержку кодека')
     }
 
     // Prefer native HLS where available (notably Safari), as its platform
     // decoder often has broader HEVC support than Media Source Extensions.
-    if (video.canPlayType(HLS_MIME)) {
+    // Prefer hls.js when MSE is available. Some Chromium builds report
+    // native HLS support inconsistently and then fail without useful details.
+    // Use native HLS only as a fallback (notably Safari/iOS).
+    if (!Hls.isSupported() && video.canPlayType(HLS_MIME)) {
       nativeMetadataHandler = onNativeMetadata
       nativeErrorHandler = onNativeError
       video.addEventListener('loadedmetadata', onNativeMetadata, { once: true })
@@ -133,7 +136,7 @@ export default function Live() {
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal || disposed) return
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (isHevcStream()) {
+          if (isHevcStream() && hevcNotSupported()) {
             showHevcHelp()
             hls?.destroy()
             hls = null
