@@ -127,7 +127,7 @@ export default function Dashboard({ onLogout }: Props) {
           </div>
         ) : (
           <div className="grid">
-            {cameras.map((cam) => (
+            {cameras.map((cam, index) => (
               <div key={cam.id} className="card">
                 <Link to={`/live/${cam.id}`} className="preview-link">
                   <div className="preview">
@@ -135,7 +135,7 @@ export default function Dashboard({ onLogout }: Props) {
                       <img
                         src={`${cam.preview_url}?t=${encodeURIComponent(cam.last_frame_at || '')}`}
                         alt={cam.name}
-                        loading="lazy"
+                        loading={index < 6 ? 'eager' : 'lazy'}
                         decoding="async"
                       />
                     ) : (
