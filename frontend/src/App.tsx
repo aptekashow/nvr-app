@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Live from './pages/Live'
+import Archive from './pages/Archive'
 
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'))
@@ -24,6 +25,10 @@ function App() {
       <Route
         path="/live/:id"
         element={token ? <Live /> : <Navigate to="/login" />}
+      />
+      <Route
+        path="/archive"
+        element={token ? <Archive /> : <Navigate to="/login" />}
       />
     </Routes>
   )
